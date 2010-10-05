@@ -65,13 +65,14 @@ classdef jobOrchestra < handle
             % sample bjobs output:
             % JOBID   USER    STAT  QUEUE      FROM_HOST   EXEC_HOST   JOB_NAME   SUBMIT_TIME
             % 35844   jlm26   RUN   sorger_15m orchestra.m clarinet043 *_75468[1] Sep 23 13:59
-
-            % Split off first line -- 10 is ASCII code for newline
+            % Split off header line -- 10 is ASCII code for newline
             [out_line, buffer] = strtok(stdout, 10);
+            % Look for first header to see if we are getting normal bjobs output
             if ~strcmp(out_line(1:5), 'JOBID')
                 self.State = 'unavailable';
                 return;
             end
+            % Track the tasks for which we've parsed a report line
             tasks_seen = false(size(self.tasks));
             % Loop over lines (one per task), parsing and updating task state
             % (after last line is tokenized buffer contains a single newline, thus the >1)
@@ -90,12 +91,16 @@ classdef jobOrchestra < handle
                 self.tasks(task_index).State = task_state;
                 tasks_seen(task_index) = true;
             end
-            % Look for tasks not seen in the bjobs output, which we haven't marked finished already. (LSF jobs
-            % in state 'DONE' get cleaned up, and that's OK as long as we noticed it before it got cleaned)
+            % Check for tasks not seen in the bjobs output, which we haven't marked finished already. (LSF jobs
+            % in state 'DONE' get cleaned up, and that's OK as long as we notice them before they get cleaned)
             % TODO: If waitForState is not called within LSF's CLEAN_PERIOD (default 1 hour) then we might miss
-            % job exit too. We may need to store a status in the out.mat file and check that.
-            if any(~strcmp({self.tasks(~tasks_seen).State}, 'finished'))
-                error('bjobs command failed to report on jobs still pending or running:');
+            % job exit too. The task wrapper may need to store a status in the out.mat file and check that.
+            if any(~tasks_seen)
+                num_missing_tasks = nnz(~strcmp({self.tasks(~tasks_seen).State}, 'finished'));
+                if num_missing_tasks > 0
+                    error(sprintf('bjobs command failed to report on %d jobs still pending or running for job %d.', ... 
+                                  num_missing_tasks, self.job_id));
+                end
             end
             % Set our state based on state of our tasks
             if any(strcmp({self.tasks.State}, 'running'))
