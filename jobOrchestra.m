@@ -84,9 +84,12 @@ classdef jobOrchestra < handle
                     tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
                     task_index = sscanf(tokens{1}{1}, '%d');
                     switch lsf_state
-                      case 'PEND'; task_state = 'pending';
-                      case 'RUN';  task_state = 'running';
-                      case 'DONE'; task_state = 'finished';
+                      case {'PEND', 'PSUSP'}
+                        task_state = 'pending';
+                      case {'RUN', 'USUSP', 'SSUSP'}
+                        task_state = 'running';
+                      case {'DONE', 'EXIT'}
+                        task_state = 'finished';
                       otherwise; error(sprintf('bjobs command reported unknown task state "%s" for job %d[%d]', ...
                                                lsf_state, self.job_id, task_index));
                     end
