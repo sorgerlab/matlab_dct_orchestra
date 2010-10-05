@@ -61,36 +61,45 @@ classdef jobOrchestra < handle
         end
 
         function updateState(self)
-            [status, stdout] = system(['bjobs ' num2str(self.job_id)]);
-            % sample bjobs output:
-            % JOBID   USER    STAT  QUEUE      FROM_HOST   EXEC_HOST   JOB_NAME   SUBMIT_TIME
-            % 35844   jlm26   RUN   sorger_15m orchestra.m clarinet043 *_75468[1] Sep 23 13:59
-            % Split off header line -- 10 is ASCII code for newline
-            [out_line, buffer] = strtok(stdout, 10);
-            % Look for first header to see if we are getting normal bjobs output
-            if ~strcmp(out_line(1:5), 'JOBID')
-                self.State = 'unavailable';
-                return;
-            end
-            % Track the tasks for which we've parsed a report line
-            tasks_seen = false(size(self.tasks));
-            % Loop over lines (one per task), parsing and updating task state
-            % (after last line is tokenized buffer contains a single newline, thus the >1)
-            while length(buffer) > 1
-                [out_line, buffer] = strtok(buffer, 10);
-                lsf_state = strtok(out_line(17:22));
-                tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
-                task_index = sscanf(tokens{1}{1}, '%d');
-                switch lsf_state
-                  case 'PEND'; task_state = 'pending';
-                  case 'RUN';  task_state = 'running';
-                  case 'DONE'; task_state = 'finished';
-                  otherwise; error(sprintf('bjobs command reported unknown task state "%s" for job %d[%d]', ...
-                                           lsf_state, self.job_id, task_index));
+
+            try
+                [status, stdout] = system(['bjobs ' num2str(self.job_id)]);
+                % sample bjobs output:
+                % JOBID   USER    STAT  QUEUE      FROM_HOST   EXEC_HOST   JOB_NAME   SUBMIT_TIME
+                % 35844   jlm26   RUN   sorger_15m orchestra.m clarinet043 *_75468[1] Sep 23 13:59
+                % Split off header line -- 10 is ASCII code for newline
+                [out_line, buffer] = strtok(stdout, 10);
+                % Look for first header to see if we are getting normal bjobs output
+                if ~strcmp(out_line(1:5), 'JOBID')
+                    self.State = 'unavailable';
+                    return;
                 end
-                self.tasks(task_index).State = task_state;
-                tasks_seen(task_index) = true;
+                % Track the tasks for which we've parsed a report line
+                tasks_seen = false(size(self.tasks));
+                % Loop over lines (one per task), parsing and updating task state
+                % (after last line is tokenized buffer contains a single newline, thus the >1)
+                while length(buffer) > 1
+                    [out_line, buffer] = strtok(buffer, 10);
+                    lsf_state = strtok(out_line(17:22));
+                    tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
+                    task_index = sscanf(tokens{1}{1}, '%d');
+                    switch lsf_state
+                      case 'PEND'; task_state = 'pending';
+                      case 'RUN';  task_state = 'running';
+                      case 'DONE'; task_state = 'finished';
+                      otherwise; error(sprintf('bjobs command reported unknown task state "%s" for job %d[%d]', ...
+                                               lsf_state, self.job_id, task_index));
+                    end
+                    self.tasks(task_index).State = task_state;
+                    tasks_seen(task_index) = true;
+                end
+            catch e
+                disp('caught exception in bjobs output parsing');
+                disp('stdout:');
+                fprintf('====\n%s====\n', stdout);
+                rethrow(e);
             end
+
             % Check for tasks not seen in the bjobs output, which we haven't marked finished already. (LSF jobs
             % in state 'DONE' get cleaned up, and that's OK as long as we notice them before they get cleaned)
             % TODO: If waitForState is not called within LSF's CLEAN_PERIOD (default 1 hour) then we might miss
