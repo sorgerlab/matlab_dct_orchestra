@@ -32,7 +32,7 @@ classdef jobOrchestra < handle
                 error('You must set the "ClusterMatlabRoot" option on your scheduler object.');
             end
 
-            self.uid = [datestr(now, 30) '_' sprintf('%05d', randi(999))];
+            self.uid = [datestr(now, 30) '_' sprintf('%03d', randi(999))];
             mkdir(self.job_dir);
             for i = 1:length(self.tasks)
                 dir = self.task_dir_index(i);
