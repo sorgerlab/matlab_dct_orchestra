@@ -4,6 +4,7 @@ classdef taskOrchestra < handle
         input = struct('function_name', [], 'nargout', [], 'argsin', [])
         output = struct('argsout', [], 'success', [])
         State
+        Error
     end
     
     methods

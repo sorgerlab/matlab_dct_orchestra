@@ -1,12 +1,10 @@
-function rand_wrapper(task_dir)
+function max_wrapper(task_dir)
 
 input = load([task_dir 'in.mat']);
 
 %=====
-% change this line to call a different function
-func = @rand;
-s = RandStream.create('mt19937ar','seed',sum(100*clock));
-RandStream.setDefaultStream(s);
+% change only this line to call a different function
+func = @max;
 %=====
 
 output.argsout = cell(1, input.nargout);

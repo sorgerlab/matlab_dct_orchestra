@@ -1,7 +1,6 @@
 QUEUE_NAME = 'sysbio_2h';
-WORKER_FUNC = @rand;
-NARGOUT = 1;
-ARGSIN = {3,5};
+WORKER_FUNC = @max;
+NARGOUT = 2;
 
 
 jm = schedulerOrchestra;
@@ -12,7 +11,7 @@ set(jm, 'SubmitArguments', ['-q ' QUEUE_NAME]);
 job = createJob(jm);
 
 for i = 1:10
-    createTask(job, WORKER_FUNC, NARGOUT, ARGSIN);
+    createTask(job, WORKER_FUNC, NARGOUT, {rand(5)});
 end
 
 submit(job);

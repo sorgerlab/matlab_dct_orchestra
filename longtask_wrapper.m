@@ -9,7 +9,8 @@ s = RandStream.create('mt19937ar','seed',sum(100*clock));
 RandStream.setDefaultStream(s);
 %=====
 
-output.argsout{1} = func(input.argsin{:});
+output.argsout = cell(1, input.nargout);
+[output.argsout{:}] = func(input.argsin{:});
 output.success = true;
 
 save([task_dir 'out.mat'], '-struct', 'output');

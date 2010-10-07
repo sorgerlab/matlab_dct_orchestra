@@ -107,6 +107,8 @@ classdef jobOrchestra < handle
             % in state 'DONE' get cleaned up, and that's OK as long as we notice them before they get cleaned)
             % TODO: If waitForState is not called within LSF's CLEAN_PERIOD (default 1 hour) then we might miss
             % job exit too. The task wrapper may need to store a status in the out.mat file and check that.
+            % TODO: bjobs doesn't show new jobs right away, it usually takes a few seconds.  Will probably need
+            % to handle that without triggering an error.
             if any(~tasks_seen)
                 num_missing_tasks = nnz(~strcmp({self.tasks(~tasks_seen).State}, 'finished'));
                 if num_missing_tasks > 0
@@ -155,12 +157,20 @@ classdef jobOrchestra < handle
         end
         
         function args = getAllOutputArguments(self)
+            task_inputs = [self.tasks.input];
+            max_nargout = max([task_inputs.nargout]);
+            args = cell(length(self.tasks), max_nargout);
             for i = 1:length(self.tasks)
                 dir = self.task_dir_index(i);
-                self.tasks(i).read_output([dir 'out.mat']);
-                % TODO: check task.success
-                % TODO: support > 1 output argument
-                args{i,1} = self.tasks(i).output.argsout{1};
+                try
+                    self.tasks(i).read_output([dir 'out.mat']);
+                    % TODO: check for task success
+                    [args{i,1:self.tasks(i).input.nargout}] = self.tasks(i).output.argsout{:};
+                catch e
+                    % TODO: This will always be "no such file or directory" from load(),
+                    % not the actual task's exception, but at least it's a start.
+                    self.tasks(i).Error = e;
+                end
             end
         end
         
