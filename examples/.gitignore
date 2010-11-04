@@ -1,0 +1,6 @@
+mccExcludedFiles.log
+readme.txt
+*.c
+*.sh
+*.prj
+*_wrapper
