@@ -63,6 +63,19 @@ classdef jobOrchestra < handle
 
         function updateState(self)
 
+            % Track the tasks we have observed
+            tasks_seen = false(size(self.tasks));
+
+            % First we look for output data files from finished tasks
+            for i = 1:length(self.tasks)
+                self.populate_task_output(i, false);
+                if self.tasks(i).output.success
+                    self.tasks(i).State = 'finished';
+                    tasks_seen(i) = true;
+                end
+            end
+
+            % Next, call "bjobs" and parse its output to report on unfinished jobs
             try
                 [status, stdout] = system(['bjobs ' num2str(self.job_id)]);
                 % sample bjobs output:
@@ -75,8 +88,6 @@ classdef jobOrchestra < handle
                     self.State = 'unavailable';
                     return;
                 end
-                % Track the tasks for which we've parsed a report line
-                tasks_seen = false(size(self.tasks));
                 % Loop over lines (one per task), parsing and updating task state
                 % (after last line is tokenized buffer contains a single newline, thus the >1)
                 while length(buffer) > 1
@@ -84,18 +95,20 @@ classdef jobOrchestra < handle
                     lsf_state = strtok(out_line(17:22));
                     tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
                     task_index = sscanf(tokens{1}{1}, '%d');
-                    switch lsf_state
-                      case {'PEND', 'PSUSP'}
-                        task_state = 'pending';
-                      case {'RUN', 'USUSP', 'SSUSP'}
-                        task_state = 'running';
-                      case {'DONE', 'EXIT'}
-                        task_state = 'finished';
-                      otherwise; error(sprintf('bjobs command reported unknown task state "%s" for job %d[%d]', ...
-                                               lsf_state, self.job_id, task_index));
+                    if ~tasks_seen(i)
+                        switch lsf_state
+                          case {'PEND', 'PSUSP'}
+                            task_state = 'pending';
+                          case {'RUN', 'USUSP', 'SSUSP'}
+                            task_state = 'running';
+                          case {'DONE', 'EXIT'}
+                            task_state = 'finished';
+                          otherwise; error(sprintf('bjobs command reported unknown task state "%s" for job %d[%d]', ...
+                                                   lsf_state, self.job_id, task_index));
+                        end
+                        self.tasks(task_index).State = task_state;
+                        tasks_seen(task_index) = true;
                     end
-                    self.tasks(task_index).State = task_state;
-                    tasks_seen(task_index) = true;
                 end
             catch e
                 disp('caught exception in bjobs output parsing');
@@ -162,17 +175,29 @@ classdef jobOrchestra < handle
             max_nargout = max([task_inputs.nargout]);
             args = cell(length(self.tasks), max_nargout);
             for i = 1:length(self.tasks)
-                dir = self.task_dir_index(i);
-                try
-                    self.tasks(i).read_output([dir 'out.mat']);
-                    % TODO: check for task success
-                    [args{i,1:self.tasks(i).input.nargout}] = self.tasks(i).output.argsout{:};
-                catch e
-                    % TODO: This will always be "no such file or directory" from load(),
-                    % not the actual task's exception, but at least it's a start.
+                self.populate_task_output(i)
+                [args{i,1:self.tasks(i).input.nargout}] = self.tasks(i).output.argsout{:};
+            end
+        end
+
+        function success = populate_task_output(self, task_index, varargin)
+            dir = self.task_dir_index(task_index);
+            track_error = false;
+            if nargin == 3
+                track_error = varargin{1};
+            end
+
+            try
+                self.tasks(task_index).read_output([dir 'out.mat']);
+            catch e
+                % TODO: This will always be "no such file or directory" from load(),
+                % not the actual task's exception, but at least it's a start.
+                if track_error
                     self.tasks(i).Error = e;
                 end
+                self.tasks(i).output.argsout = {};
             end
+            success = self.tasks(task_index).output.success;
         end
         
         function destroy(self)
