@@ -1,0 +1,22 @@
+matlab_dct_orchestra
+====================
+
+Workalike for Matlab's Distributed Computing Toolbox which does not require a
+DCT license nor any per-worker licenses at all, designed specifically for the
+HMS Orchestra cluster.
+
+USAGE
+-----
+
+Use just like the DC toolbox, except you must first compile a wrapper function
+for the function to be distributed.  See examples/test_scheduler.m for sample
+usage.
+
+To distribute the Matlab function "myfunc", copy examples/max_wrapper.m to
+myfunc_wrapper.m, change all instances of "max" to "myfunc", and compile:
+
+   mcc -m -R -singleCompThread,-nodisplay myfunc_wrapper.m
+
+If myfunc uses random number generation without explicitly seeding the
+generator, copy and modify rand_wrapper.m instead. (Otherwise all executions of
+myfun will use the same random seed, which is probably not what is intended.)
