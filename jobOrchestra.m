@@ -47,11 +47,11 @@ classdef jobOrchestra < handle
             matlab_root = self.scheduler.options.ClusterMatlabRoot;
             % TODO: see function_names issue above. assuming all
             % are identical for now, so we just use the first one.
-            task_command = ['./run_' self.tasks(1).input.function_name '.sh ' ...
+            task_command = ['env MCR_CACHE_ROOT=/tmp/\$USER.\$LSB_JOBID.\$LSB_JOBINDEX ' ...
+                            './run_' self.tasks(1).input.function_name '.sh ' ...
                             matlab_root ' ' ...
                             self.task_dir_bsub_var];
             bsub_command = ['bsub ' bsub_args ' ' task_command];
-            setenv('MCR_CACHE_ROOT', '/tmp');
             [status, stdout] = system(bsub_command);
             if status ~= 0
                 error('bsub command failed.');
