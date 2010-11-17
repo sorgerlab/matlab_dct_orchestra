@@ -3,6 +3,7 @@ classdef taskOrchestra < handle
     properties
         input = struct('function_name', [], 'nargout', [], 'argsin', [])
         output = struct('argsout', [], 'success', false)
+        seen = false
         State
         Error
     end

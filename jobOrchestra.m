@@ -64,14 +64,14 @@ classdef jobOrchestra < handle
         function updateState(self)
 
             % Track the tasks we have observed
-            tasks_seen = false(size(self.tasks));
+            update_seen = false(size(self.tasks));
 
             % First we look for output data files from finished tasks
             for i = 1:length(self.tasks)
                 self.populate_task_output(i, false);
                 if self.tasks(i).output.success
                     self.tasks(i).State = 'finished';
-                    tasks_seen(i) = true;
+                    update_seen(i) = true;
                 end
             end
 
@@ -95,7 +95,8 @@ classdef jobOrchestra < handle
                     lsf_state = strtok(out_line(17:22));
                     tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
                     task_index = sscanf(tokens{1}{1}, '%d');
-                    if ~tasks_seen(i)
+                    % skip this if task already observed via output data file
+                    if ~update_seen(task_index)
                         switch lsf_state
                           case {'PEND', 'PSUSP'}
                             task_state = 'pending';
@@ -107,7 +108,8 @@ classdef jobOrchestra < handle
                                                    lsf_state, self.job_id, task_index));
                         end
                         self.tasks(task_index).State = task_state;
-                        tasks_seen(task_index) = true;
+                        self.tasks(task_index).seen = true;
+                        update_seen(task_index) = true;
                     end
                 end
             catch e
@@ -117,17 +119,14 @@ classdef jobOrchestra < handle
                 rethrow(e);
             end
 
-            % Check for tasks not seen in the bjobs output, which we haven't marked finished already. (LSF jobs
-            % in state 'DONE' get cleaned up, and that's OK as long as we notice them before they get cleaned)
-            % TODO: If waitForState is not called within LSF's CLEAN_PERIOD (default 1 hour) then we might miss
-            % job exit too. The task wrapper may need to store a status in the out.mat file and check that.
-            % TODO: bjobs doesn't show new jobs right away, it usually takes a few seconds.  Will probably need
-            % to handle that without triggering an error.
-            if any(~tasks_seen)
-                num_missing_tasks = nnz(~strcmp({self.tasks(~tasks_seen).State}, 'finished'));
-                if num_missing_tasks > 0
+            % Check for tasks not seen in this update, which we *have* seen before
+            % but *haven't* marked finished already.
+            missing = ~update_seen & cell2mat({self.tasks.seen});
+            if any(missing)
+                num_unfinished = nnz(~strcmp({self.tasks(missing).State}, 'finished'));
+                if num_unfinished > 0
                     error(sprintf('bjobs command failed to report on %d jobs still pending or running for job %d.', ... 
-                                  num_missing_tasks, self.job_id));
+                                  num_unfinished, self.job_id));
                 end
             end
             % Set our state based on state of our tasks
@@ -175,14 +174,14 @@ classdef jobOrchestra < handle
             max_nargout = max([task_inputs.nargout]);
             args = cell(length(self.tasks), max_nargout);
             for i = 1:length(self.tasks)
-                self.populate_task_output(i)
+                self.populate_task_output(i);
                 [args{i,1:self.tasks(i).input.nargout}] = self.tasks(i).output.argsout{:};
             end
         end
 
         function success = populate_task_output(self, task_index, varargin)
             dir = self.task_dir_index(task_index);
-            track_error = false;
+            track_error = true;
             if nargin == 3
                 track_error = varargin{1};
             end
@@ -193,9 +192,9 @@ classdef jobOrchestra < handle
                 % TODO: This will always be "no such file or directory" from load(),
                 % not the actual task's exception, but at least it's a start.
                 if track_error
-                    self.tasks(i).Error = e;
+                    self.tasks(task_index).Error = e;
                 end
-                self.tasks(i).output.argsout = {};
+                self.tasks(task_index).output.argsout = {};
             end
             success = self.tasks(task_index).output.success;
         end
