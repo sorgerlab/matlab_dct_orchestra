@@ -17,9 +17,8 @@ classdef jobOrchestra < handle
         
         function task = createTask(self, function_name, nargout, argsin)
             if isa(function_name, 'function_handle')
-                % If a function handle was passed, append _wrapper to the name and use
-                % that as the compiled function name to call.
-                function_name = [func2str(function_name) '_wrapper'];
+                % also accept function handle, and convert to string
+                function_name = func2str(function_name);
             end
             task = taskOrchestra(function_name, nargout, argsin);
             self.tasks(end+1) = task;
@@ -47,10 +46,18 @@ classdef jobOrchestra < handle
             matlab_root = self.scheduler.options.ClusterMatlabRoot;
             % TODO: see function_names issue above. assuming all
             % are identical for now, so we just use the first one.
-            task_command = ['env MCR_CACHE_ROOT=/tmp/\$USER.\$LSB_JOBID.\$LSB_JOBINDEX ' ...
-                            './run_' self.tasks(1).input.function_name '.sh ' ...
-                            matlab_root ' ' ...
-                            self.task_dir_bsub_var];
+            function_name = self.tasks(1).input.function_name;
+            wrapper_script = ['./run_' function_name '_wrapper.sh'];
+            if exist(wrapper_script, 'file')
+                % use precompiled function
+                task_command = ['env MCR_CACHE_ROOT=/tmp/\$USER.\$LSB_JOBID.\$LSB_JOBINDEX ' ...
+                                wrapper_script ' ' matlab_root ' ' self.task_dir_bsub_var];
+            else
+                % invoke matlab directly
+                task_command = [matlab_root '/bin/matlab -nodisplay -singleCompThread ' ...
+                                '-r "schedulerOrchestra.function_wrapper(''' ...
+                                self.task_dir_bsub_var ''',''' function_name ''')"'];
+            end
             bsub_command = ['bsub ' bsub_args ' ' task_command];
             [status, stdout] = system(bsub_command);
             if status ~= 0
@@ -63,19 +70,10 @@ classdef jobOrchestra < handle
 
         function updateState(self)
 
-            % Track the tasks we have observed
+            % Track the tasks we have observed in this update
             update_seen = false(size(self.tasks));
 
-            % First we look for output data files from finished tasks
-            for i = 1:length(self.tasks)
-                self.populate_task_output(i, false);
-                if self.tasks(i).output.success
-                    self.tasks(i).State = 'finished';
-                    update_seen(i) = true;
-                end
-            end
-
-            % Next, call "bjobs" and parse its output to report on unfinished jobs
+            % Call "bjobs" and parse its output to determine task status
             try
                 [status, stdout] = system(['bjobs ' num2str(self.job_id)]);
                 % sample bjobs output:
@@ -95,28 +93,36 @@ classdef jobOrchestra < handle
                     lsf_state = strtok(out_line(17:22));
                     tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
                     task_index = sscanf(tokens{1}{1}, '%d');
-                    % skip this if task already observed via output data file
-                    if ~update_seen(task_index)
-                        switch lsf_state
-                          case {'PEND', 'PSUSP'}
-                            task_state = 'pending';
-                          case {'RUN', 'USUSP', 'SSUSP'}
-                            task_state = 'running';
-                          case {'DONE', 'EXIT'}
-                            task_state = 'finished';
-                          otherwise; error(sprintf('bjobs command reported unknown task state "%s" for job %d[%d]', ...
-                                                   lsf_state, self.job_id, task_index));
-                        end
-                        self.tasks(task_index).State = task_state;
-                        self.tasks(task_index).seen = true;
-                        update_seen(task_index) = true;
+                    switch lsf_state
+                      case {'PEND', 'PSUSP'}
+                        task_state = 'pending';
+                      case {'RUN', 'USUSP', 'SSUSP'}
+                        task_state = 'running';
+                      case {'DONE', 'EXIT'}
+                        task_state = 'finished';
+                      otherwise; error(sprintf('bjobs command reported unknown task state "%s" for job %d[%d]', ...
+                                               lsf_state, self.job_id, task_index));
                     end
+                    self.tasks(task_index).State = task_state;
+                    self.tasks(task_index).seen = true;
+                    update_seen(task_index) = true;
                 end
             catch e
                 disp('caught exception in bjobs output parsing');
                 disp('stdout:');
                 fprintf('====\n%s====\n', stdout);
                 rethrow(e);
+            end
+
+            % Look for output data files from finished tasks.
+            for task_index = 1:length(self.tasks)
+                success = self.populate_task_output(task_index, false);
+                if success & ~update_seen(task_index)
+                    % This handles the case where a job is truly finished but CLEAN_PERIOD has
+                    % elapsed and bjobs no longer displays it.
+                    self.tasks(task_index).State = 'finished';
+                    update_seen(task_index) = true;
+                end
             end
 
             % Check for tasks not seen in this update, which we *have* seen before
@@ -180,14 +186,17 @@ classdef jobOrchestra < handle
         end
 
         function success = populate_task_output(self, task_index, varargin)
+        % returns true if there was an output data file and it was read successfully
             dir = self.task_dir_index(task_index);
             track_error = true;
             if nargin == 3
                 track_error = varargin{1};
             end
 
+            success = false;
             try
                 self.tasks(task_index).read_output([dir 'out.mat']);
+                success = true;
             catch e
                 % TODO: This will always be "no such file or directory" from load(),
                 % not the actual task's exception, but at least it's a start.
@@ -196,7 +205,6 @@ classdef jobOrchestra < handle
                 end
                 self.tasks(task_index).output.argsout = {};
             end
-            success = self.tasks(task_index).output.success;
         end
         
         function destroy(self)
