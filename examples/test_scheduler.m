@@ -1,5 +1,5 @@
 QUEUE_NAME = 'sysbio_2h';
-WORKER_FUNC = @rand;
+WORKER_FUNC = @rand_seeded;
 NARGOUT = 1;
 ARGSIN = {3,5};
 
@@ -7,7 +7,7 @@ ARGSIN = {3,5};
 jm = schedulerOrchestra;
 
 set(jm, 'ClusterMatlabRoot', '/opt/matlab');
-set(jm, 'SubmitArguments', ['-q ' QUEUE_NAME]); 
+set(jm, 'SubmitArguments', ['-q ' QUEUE_NAME]);
 
 job = createJob(jm);
 
@@ -16,6 +16,7 @@ for i = 1:10
 end
 
 submit(job);
+fprintf('LSF job id = %d\n', job.job_id);
 while ~waitForState(job, 'finished', 10)
    disp(datestr(now, 31));
    for i=1:length(job.tasks)

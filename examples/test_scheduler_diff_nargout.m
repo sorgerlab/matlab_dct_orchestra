@@ -21,6 +21,7 @@ createTask(job, @max, 2, {x, y, 2}); % error - two matrices to compare and a wor
 
 
 submit(job);
+fprintf('LSF job id = %d\n', job.job_id);
 while ~waitForState(job, 'finished', 10)
    disp(datestr(now, 31));
    for i=1:length(job.tasks)

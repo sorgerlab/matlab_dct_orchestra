@@ -16,6 +16,7 @@ for i = 1:100
 end
 
 submit(job);
+fprintf('LSF job id = %d\n', job.job_id);
 while ~waitForState(job, 'finished', 10)
    disp(datestr(now, 31));
    for i=1:length(job.tasks)
@@ -31,4 +32,4 @@ results = getAllOutputArguments(job);
 
 destroy(job);
 
-celldisp(results);
+disp(cell2mat(results));
