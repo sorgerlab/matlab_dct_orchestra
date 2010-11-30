@@ -28,19 +28,28 @@ classdef schedulerOrchestra < handle
 
         function function_wrapper(task_dir, func_name)
             input = load([task_dir 'in.mat']);
-            func = str2func(func_name);
-            output.argsout = cell(1, input.nargout);
-            [output.argsout{:}] = func(input.argsin{:});
-            output.success = true;
+            output = struct('argsout', [], 'success', false, 'error', []);
+            try
+                func = str2func(func_name);
+                output.argsout = cell(1, input.nargout);
+                [output.argsout{:}] = func(input.argsin{:});
+                output.success = true;
+            catch e
+                output.error = e;
+            end
             save([task_dir 'out.mat'], '-struct', 'output');
         end
 
         function seed_randstream
         % seed random number generator from system RNG
+            RandStream.setDefaultStream(schedulerOrchestra.create_randstream);
+        end
+
+        function stream = create_randstream
+        % create random number generator seeded from system RNG
             fid = fopen('/dev/urandom');
             seed = fread(fid, 1, 'uint32');
-            s = RandStream.create('mt19937ar', 'seed', seed);
-            RandStream.setDefaultStream(s);
+            stream = RandStream.create('mt19937ar', 'seed', seed);
         end
     end
 
