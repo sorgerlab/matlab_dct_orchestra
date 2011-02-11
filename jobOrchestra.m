@@ -2,10 +2,11 @@ classdef jobOrchestra < handle
     
     properties
         scheduler
-        tasks = taskOrchestra.empty
-        uid
-        job_id
-        auto_retry = false
+        tasks = taskOrchestra.empty  % the sub-tasks we will run
+        uid              % a unique string used to craft a working directory
+        job_id = -1      % our LSF job id
+        auto_retry = 0   % number of times failed tasks will be automatically retried
+        retry_jobs = {}  % storage for the retry-triggered jobs
         State
     end
     
@@ -47,6 +48,11 @@ classdef jobOrchestra < handle
                 self.tasks(i).write_input([dir 'in.mat']);
             end
 
+            % initialize retry_jobs with empty arrays
+            for i = 1:length(self.tasks)
+                self.retry_jobs{i} = jobOrchestra.empty;
+            end
+
             job_name = sprintf('%s[1-%d]', self.uid, length(self.tasks));
             bsub_args = ['-J ' job_name ' ' ...
                          '-o ' self.task_dir_bsub_log 'log.txt ' ...
@@ -68,11 +74,14 @@ classdef jobOrchestra < handle
             end
             bsub_command = ['bsub ' bsub_args ' ' task_command];
             [status, stdout] = system(bsub_command);
-            if status ~= 0
-                error('bsub command failed.');
+            tokens = regexp(stdout, '<(\d+)>', 'tokens');
+            if length(tokens)
+                self.job_id = str2double(tokens{1});
+                self.State = 'queued';
+            else
+                self.State = 'finished';
+                error(['bsub command failed.  output follows: ' 10 stdout]);  % the 10 is a newline
             end
-            self.job_id = sscanf(stdout, 'Job <%d>');
-            self.State = 'queued';
         end
 
         function updateState(self)
@@ -80,23 +89,7 @@ classdef jobOrchestra < handle
             % Track the tasks we have observed in this update
             update_seen = false(size(self.tasks));
 
-            % First we look for output data files from finished tasks and resubmit
-            % errored jobs if configured to do so
-            for i = 1:length(self.tasks)
-                self.populate_task_output(i, false);
-                %if 
-                if self.tasks(i).output.success
-                    self.tasks(i).State = 'finished';
-                    update_seen(i) = true;
-                else
-                    if self.auto_retry
-                        % this task has failed and we are configured to auto-retry
-                        
-                    end
-                end
-            end
-
-            % Next, call "bjobs" and parse its output to report on unfinished jobs
+            % Call "bjobs" and parse its output to report on unfinished tasks
             try
                 bjobs_command = sprintf('bjobs %d', self.job_id);
                 [status, stdout] = system(bjobs_command);
@@ -107,7 +100,20 @@ classdef jobOrchestra < handle
                 [out_line, buffer] = strtok(stdout, 10);
                 % Look for first header to see if we are getting normal bjobs output
                 if ~strcmp(out_line(1:5), 'JOBID')
-                    self.State = 'unavailable';
+                    if strfind(out_line, 'is not found') && strcmp(self.State, 'running')
+                        % "Job <n> is not found" can be reported both right after a job is submitted
+                        % but before LSF has fully caught up, and also after a job has finished and
+                        % CLEAN_PERIOD has elapsed at which point LSF has purged the job from its
+                        % records.  If we see this message and the job is currently in the "running"
+                        % state, then the job has finished and should be marked as such.  However if
+                        % it's not running (which leaves pending or unavailable), we assume the
+                        % job was just submitted so we should report unavailable instead.
+                        self.State = 'finished';
+                    else
+                        % we report "unavailable" for "is not found" on not-yet-running jobs, and
+                        % also for any other error message.
+                        self.State = 'unavailable';
+                    end
                     return;
                 end
                 % Loop over lines (one per task), parsing and updating task state
@@ -116,24 +122,27 @@ classdef jobOrchestra < handle
                     [out_line, buffer] = strtok(buffer, 10);
                     lsf_state = strtok(out_line(17:22));
                     tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
-                    task_index = sscanf(tokens{1}{1}, '%d');
-                    switch lsf_state
-                      case {'PEND', 'PSUSP'}
-                        task_state = 'pending';
-                      case {'RUN', 'USUSP', 'SSUSP'}
-                        task_state = 'running';
-                      case {'DONE', 'EXIT'}
-                        task_state = 'finished';
-                      otherwise; error('bjobs command reported unknown task state "%s" for job %d[%d]', ...
-                                       lsf_state, self.job_id, task_index);
+                    task_index = str2double(tokens{1}{1});
+                    % only update jobs that aren't already finished
+                    if ~strcmp(self.tasks(task_index).State, 'finished')
+                        switch lsf_state
+                          case {'PEND', 'PSUSP'}
+                            task_state = 'pending';
+                          case {'RUN', 'USUSP', 'SSUSP'}
+                            task_state = 'running';
+                          case {'DONE', 'EXIT'}
+                            task_state = 'finished';
+                          otherwise; error('bjobs command reported unknown task state "%s" for job %d[%d]', ...
+                                           lsf_state, self.job_id, task_index);
+                        end
+                        self.tasks(task_index).State = task_state;
+                        self.tasks(task_index).seen = true;
+                        update_seen(task_index) = true;
                     end
-                    self.tasks(task_index).State = task_state;
-                    self.tasks(task_index).seen = true;
-                    update_seen(task_index) = true;
                 end
             catch e
                 fprintf('caught exception in bjobs output parsing\n');
-                fprintf('  uid: %d\n', self.uid);
+                fprintf('  uid: %s\n', self.uid);
                 fprintf('  job_id: %d\n', self.job_id);
                 fprintf('  state: %s\n', self.State);
                 fprintf('  bjobs command: %s\n', bjobs_command);
@@ -142,56 +151,96 @@ classdef jobOrchestra < handle
                 rethrow(e);
             end
 
-            % Look for output data files from finished tasks.
+            % Read output data files to populate the task.output struct
             for task_index = 1:length(self.tasks)
-                success = self.populate_task_output(task_index, false);
-                if success && ~update_seen(task_index)
-                    % This handles the case where a job is truly finished but CLEAN_PERIOD has
-                    % elapsed and bjobs no longer displays it.
+                clean_exit = self.populate_task_output(task_index, false);
+                % Handle the case where a job is truly finished but CLEAN_PERIOD has elapsed and
+                % bjobs no longer displays it.
+                if clean_exit && ~update_seen(task_index) && ~strcmp(self.tasks(task_index).State, 'finished')
                     self.tasks(task_index).State = 'finished';
+                    self.tasks(task_index).seen = true;
                     update_seen(task_index) = true;
                 end
             end
 
-            % Check for tasks not seen in this update, which we *have* seen before
-            % but *haven't* marked finished already.
+            % Retry tasks which have finished without success. (we've already called
+            % populate_task_output() on all tasks above, so task.success will be true if the task
+            % did succeed)
+            for task_index = 1:length(self.tasks)
+                if length(self.retry_jobs{task_index})
+                    % task is already being retried; check its progress (we do this regardless of
+                    % whether auto_retry is set, so that we are sure to clean up any retry jobs when
+                    % called from destroy(), which unsets auto_retry)
+                    job = self.retry_jobs{task_index}(end);
+                    finished = job.waitForState('finished', 0);
+                    if finished && ~job.tasks(1).output.success
+                        % failure; retry again if limit not yet reached (NB: this test will always
+                        % be false if auto_retry is 0, as desired)
+                        if length(self.retry_jobs{task_index}) < self.auto_retry
+                            self.schedule_retry(task_index);
+                        end
+                    end
+                elseif self.auto_retry && strcmp(self.tasks(task_index).State, 'finished') && ...
+                        ~self.tasks(task_index).output.success
+                    % task finished in failure; retry it
+                    self.schedule_retry(task_index);
+                end
+            end
+
+            % Check for tasks not seen in this update, which we *have* seen before but *haven't*
+            % marked finished already.  This would seem to indicate that LSF has dropped a task,
+            % which is unlikely but critical to catch if it does occur.
             missing = ~update_seen & cell2mat({self.tasks.seen});
             if any(missing)
                 num_unfinished = nnz(~strcmp({self.tasks(missing).State}, 'finished'));
                 if num_unfinished > 0
-                    error('bjobs command failed to report on %d jobs still pending or running for job %d.', ... 
+                    error('bjobs command failed to report on %d tasks still pending or running for job %d.', ... 
                           num_unfinished, self.job_id);
                 end
             end
+
             % Set our state based on state of our tasks
-            if any(strcmp({self.tasks.State}, 'running'))
+            if any(strcmp({self.tasks.State}, 'running')) || ...
+                    any(cellfun(@(j) length(j) && ~strcmp(j(end).State, 'finished'), self.retry_jobs))
+                % any task is running, or any task being retried is not finished
                 self.State = 'running';
-            elseif strcmp({self.tasks.State}, 'finished')
+            elseif all(strcmp({self.tasks.State}, 'finished')) && ...
+                    all(cellfun(@(j) ~length(j) || strcmp(j(end).State, 'finished'), self.retry_jobs))
+                % all tasks are finished, and all tasks are either not being retried or have
+                % finished their retries
                 self.State = 'finished';
             end
         end
         
         function status = waitForState(self, state, timeout)
+        % FIXME: need to support "sequence" of states, i.e. if requested to wait for 'running' and
+        % we are already 'finished', return right away.  currently we would just wait forever!
             if nargin < 3
                 timeout = -1;
                 if nargin < 2
                     state = 'finished';
                 end
             end
-            
+
+            % quickly return if we're already in the requested state (and avoid calling
+            % updateState if not necessary)
+            if strcmp(self.State, state)
+                status = true;
+                return;
+            end
+
+            self.updateState;
             if timeout >= 0
-                % We can't really do this with true "timeout semantics", so we just
-                % sleep for the full timeout length right away.
-                pause(timeout);
-                self.updateState;
+                % We can't really do this with true "timeout semantics", so we just sleep for the
+                % full timeout length if we haven't reached the target state.
                 status = strcmp(self.State, state);
+                if ~status
+                    pause(timeout);
+                end
             else
                 while ~strcmp(self.State, state)
-                    % We choose an arbitrary period of 60 seconds for our update loop.
-                    % LSF will probably never dispatch and complete a job in less
-                    % than 60 seconds anyway, so this seems sane.
-                    %pause(60); FIXME restore this line
-                    pause(1);
+                    % We choose an arbitrary period of 10 seconds for our update loop.
+                    pause(10);
                     self.updateState;
                 end
                 status = true;
@@ -210,6 +259,9 @@ classdef jobOrchestra < handle
             for i = 1:length(self.tasks)
                 self.populate_task_output(i);
                 task = self.tasks(i);
+                if length(self.retry_jobs{i})
+                    task = self.retry_jobs{i}(end).tasks(1);
+                end
                 if isempty(task.Error)
                     [args{i,1:task.input.nargout}] = task.output.argsout{:};
                 end
@@ -218,7 +270,13 @@ classdef jobOrchestra < handle
 
         function success = populate_task_output(self, task_index, varargin)
         % args: task_index [track_error=true]
-        % returns true if there was an output data file and it was read successfully
+        %
+        % Returns true if there was an output data file and it was read successfully.
+        %
+        % If track_error=true (the default) then any exception generated when reading the output
+        % file will be set as the task's error message. Set track_error=false if you don't want to
+        % treat the absence of the output file as an error.  The function's return value will
+        % always indicate success or failure, regardless of the value of track_error.
             dir = self.task_dir_index(task_index);
             track_error = true;
             if nargin == 3
@@ -238,13 +296,40 @@ classdef jobOrchestra < handle
             end
         end
         
+        function schedule_retry(self, task_index)
+        % create a single-task job to retry this task
+            % uid format looks like "olduid_r7" (r for retry, 7 for task 7)
+            uid = [self.uid '_r' num2str(task_index)];
+            if length(self.retry_jobs{task_index}) > 0
+                % if second or later retry, modify uid to look like
+                % "olduid_r7-2" where 2 is retry count
+                uid = [uid '-' num2str(length(self.retry_jobs{task_index}) + 1)];
+            end
+            job = jobOrchestra(self.scheduler, uid);
+            input = self.tasks(task_index).input;
+            job.createTask(input.function_name, input.nargout, input.argsin);
+            self.retry_jobs{task_index}(end+1) = job;
+            job.submit;
+        end
+
         function destroy(self)
-            self.updateState;
+            self.auto_retry = 0;  % important!
+            % clean up retry jobs, if any
+            for task_index = 1:length(self.tasks)
+                num_retries = length(self.retry_jobs{task_index});
+                for r = 1:num_retries
+                    self.retry_jobs{task_index}(r).destroy;
+                end
+            end
+            % now kill the main, original job
             if ~strcmp(self.State, 'finished')
                 bkill_command = sprintf('bkill %d', self.job_id);
                 system(bkill_command);
             end
-            rmdir(self.job_dir, 's');
+            % wait for job to finish cleanly before cleaning up the job dir
+            self.wait;
+            % assign return value to prevent rmdir from raising an error
+            success = rmdir(self.job_dir, 's');
         end
         
         function dir = job_dir(self)

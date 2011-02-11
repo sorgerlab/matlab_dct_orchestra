@@ -30,6 +30,7 @@ classdef schedulerOrchestra < handle
             input = load([task_dir 'in.mat']);
             output = struct('argsout', [], 'success', false, 'error', []);
             try
+                schedulerOrchestra.seed_randstream;
                 func = str2func(func_name);
                 output.argsout = cell(1, input.nargout);
                 [output.argsout{:}] = func(input.argsin{:});
