@@ -9,7 +9,11 @@ classdef jobOrchestra < handle
         retry_jobs = {}  % storage for the retry-triggered jobs
         State
     end
-    
+
+    properties(Constant)
+        msg_not_responding = 'batch system daemon not responding'
+    end
+
     methods
         
         function self = jobOrchestra(scheduler, varargin)
@@ -74,6 +78,7 @@ classdef jobOrchestra < handle
             end
             bsub_command = ['bsub ' bsub_args ' ' task_command];
             [status, stdout] = system(bsub_command);
+            stdout = jobOrchestra.filter_lsf_output(stdout);
             tokens = regexp(stdout, '<(\d+)>', 'tokens');
             if length(tokens)
                 self.job_id = str2double(tokens{1});
@@ -93,13 +98,14 @@ classdef jobOrchestra < handle
             try
                 bjobs_command = sprintf('bjobs %d', self.job_id);
                 [status, stdout] = system(bjobs_command);
+                stdout = jobOrchestra.filter_lsf_output(stdout);
                 % sample bjobs output:
                 % JOBID   USER    STAT  QUEUE      FROM_HOST   EXEC_HOST   JOB_NAME   SUBMIT_TIME
                 % 35844   jlm26   RUN   sorger_15m orchestra.m clarinet043 *_75468[1] Sep 23 13:59
                 % Split off header line -- 10 is ASCII code for newline
                 [out_line, buffer] = strtok(stdout, 10);
                 % Look for first header to see if we are getting normal bjobs output
-                if ~strcmp(out_line(1:5), 'JOBID')
+                if ~strmatch('JOBID', out_line)
                     if strfind(out_line, 'is not found') && strcmp(self.State, 'running')
                         % "Job <n> is not found" can be reported both right after a job is submitted
                         % but before LSF has fully caught up, and also after a job has finished and
@@ -277,7 +283,7 @@ classdef jobOrchestra < handle
         % file will be set as the task's error message. Set track_error=false if you don't want to
         % treat the absence of the output file as an error.  The function's return value will
         % always indicate success or failure, regardless of the value of track_error.
-            dir = self.task_dir_index(task_index);
+            dir_path = self.task_dir_index(task_index);
             track_error = true;
             if nargin == 3
                 track_error = varargin{1};
@@ -285,7 +291,10 @@ classdef jobOrchestra < handle
 
             success = false;
             try
-                self.tasks(task_index).read_output([dir 'out.mat']);
+                % dir listing seems to help get NFS server to sync
+                % FIXME: need a more reliable solution
+                dummy = dir(dir_path);
+                self.tasks(task_index).read_output([dir_path 'out.mat']);
                 success = true;
             catch e
                 % this catches any problems loading the output file
@@ -354,4 +363,19 @@ classdef jobOrchestra < handle
         
     end
     
+    methods(Static)
+
+        function stdout = filter_lsf_output(stdout)
+        % filter out any 'not responding' messages from the beginning of the output from an LSF
+        % command
+            re = ['^\n?' regexptranslate('escape', jobOrchestra.msg_not_responding)];
+            % strtok leaves the delimiter at the start of the remaining string, so we need to
+            % optionally match that with the \n for the second and subsequent iterations
+            while regexp(stdout, re)
+                [out_line, stdout] = strtok(stdout, 10);  % 10 is newline
+            end
+        end
+
+    end
+
 end

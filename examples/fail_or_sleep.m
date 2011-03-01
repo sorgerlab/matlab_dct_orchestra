@@ -12,7 +12,7 @@ if strcmp(arg, 'fail')
     end
 else
     disp('sleeping...');
-    pause(60*5);
+    pause(60*2);
     disp('done');
     result = 'sleep';
 end
