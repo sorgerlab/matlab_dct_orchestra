@@ -10,10 +10,6 @@ classdef jobOrchestra < handle
         State
     end
 
-    properties(Constant)
-        msg_not_responding = 'batch system daemon not responding'
-    end
-
     methods
         
         function self = jobOrchestra(scheduler, varargin)
@@ -78,9 +74,8 @@ classdef jobOrchestra < handle
             end
             bsub_command = ['bsub ' bsub_args ' ' task_command];
             [status, stdout] = system(bsub_command);
-            stdout = jobOrchestra.filter_lsf_output(stdout);
-            tokens = regexp(stdout, '<(\d+)>', 'tokens');
-            if length(tokens)
+            tokens = regexp(stdout, 'Job <(\d+)>', 'tokens');
+            if status == 0 && length(tokens)
                 self.job_id = str2double(tokens{1});
                 self.State = 'queued';
             else
@@ -98,34 +93,49 @@ classdef jobOrchestra < handle
             try
                 bjobs_command = sprintf('bjobs %d', self.job_id);
                 [status, stdout] = system(bjobs_command);
-                stdout = jobOrchestra.filter_lsf_output(stdout);
+                stdout_lines = jobOrchestra.split_output(stdout);
                 % sample bjobs output:
                 % JOBID   USER    STAT  QUEUE      FROM_HOST   EXEC_HOST   JOB_NAME   SUBMIT_TIME
                 % 35844   jlm26   RUN   sorger_15m orchestra.m clarinet043 *_75468[1] Sep 23 13:59
-                % Split off header line -- 10 is ASCII code for newline
-                [out_line, buffer] = strtok(stdout, 10);
+
                 % Look for first header to see if we are getting normal bjobs output
-                if ~strmatch('JOBID', out_line)
-                    if strfind(out_line, 'is not found') && strcmp(self.State, 'running')
+                header_index = jobOrchestra.strlist_find(stdout_lines, '^JOBID');
+                if ~header_index
+                    % no header, so figure out what's going on
+                    if status == 0 && jobOrchestra.strlist_find(stdout_lines, 'Job <\d+> is not found')
                         % "Job <n> is not found" can be reported both right after a job is submitted
                         % but before LSF has fully caught up, and also after a job has finished and
                         % CLEAN_PERIOD has elapsed at which point LSF has purged the job from its
                         % records.  If we see this message and the job is currently in the "running"
-                        % state, then the job has finished and should be marked as such.  However if
-                        % it's not running (which leaves pending or unavailable), we assume the
-                        % job was just submitted so we should report unavailable instead.
-                        self.State = 'finished';
+                        % state, then the job has finished and should be marked as such.  If the
+                        % job is still "queued" (just submitted) then we remain queued.  Otherwise
+                        % it's not clear what's going on so we report unavailable.
+                        switch self.State
+                          case 'running'
+                            self.State = 'finished';
+                          case 'queued'
+                            % do nothing, i.e. no change
+                          otherwise;
+                            msg = sprintf('LSF reports job <%d> not found, and state was ''%s''', ...
+                                          self.job_id, self.State);
+                            warning(msg);
+                            self.State = 'unavailable';
+                        end
                     else
-                        % we report "unavailable" for "is not found" on not-yet-running jobs, and
-                        % also for any other error message.
-                        self.State = 'unavailable';
+                        % we report "unavailable" for any non-zero exit code and any error
+                        % message other than "Job...not found"
+                        msg = sprintf(['Unexpected LSF output for job <%d>, and state was ''%s''.\n' ...
+                                       'bjobs exited with status code %d, output follows:\n%s'], ...
+                                      self.job_id, self.State, status, stdout);
+                        warning(msg);
+                        self.State = 'unavailable';  % FIXME: warning here too?
                     end
                     return;
                 end
+                stdout_lines = stdout_lines(header_index+1:end);
                 % Loop over lines (one per task), parsing and updating task state
-                % (after last line is tokenized buffer contains a single newline, thus the >1)
-                while length(buffer) > 1
-                    [out_line, buffer] = strtok(buffer, 10);
+                for line_index = 1:length(stdout_lines)
+                    out_line = stdout_lines{line_index};
                     lsf_state = strtok(out_line(17:22));
                     tokens = regexp(out_line(58:67), '\[(\d+)\]', 'tokens');
                     task_index = str2double(tokens{1}{1});
@@ -365,17 +375,25 @@ classdef jobOrchestra < handle
     
     methods(Static)
 
-        function stdout = filter_lsf_output(stdout)
-        % filter out any 'not responding' messages from the beginning of the output from an LSF
-        % command
-            re = ['^\n?' regexptranslate('escape', jobOrchestra.msg_not_responding)];
-            % strtok leaves the delimiter at the start of the remaining string, so we need to
-            % optionally match that with the \n for the second and subsequent iterations
-            while regexp(stdout, re)
-                [out_line, stdout] = strtok(stdout, 10);  % 10 is newline
+        function str_lines = split_output(output)
+        % split a string (e.g. system() output) into individual lines.  returns a cell array of strings, one
+        % string per line.
+            str_lines = regexp(output, '\n', 'split');
+            % for newline-terminated output, remove the extra empty string left over by split()
+            if length(str_lines{end}) == 0
+                str_lines = str_lines(1:end-1);
             end
         end
 
+        function index = strlist_find(strlist, re)
+        % find the first entry in a 1-D cell array of strings which matches a regexp. returns the
+        % index, or zero on failure.
+            index = find(cellfun(@length, regexp(strlist, re)), 1);
+            if isempty(index)
+                index = 0;
+            end
+        end
+        
     end
 
 end
